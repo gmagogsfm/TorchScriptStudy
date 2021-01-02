@@ -1,7 +1,9 @@
 import torch
-import enum
-from typing import List, Tuple, Optional, Dict
+import tempfile
+import os
+import subprocess
 
+# Credit to: Peng Wu
 # TSAllType := TSType | TSModuleType
 # 
 # TSType := TSMultiType | TSPrimitiveType | TSStructuralType | 
@@ -28,6 +30,38 @@ from typing import List, Tuple, Optional, Dict
 # TSTensor := "torch.tensor" and subclasses
 # TSInterface := classes w/ attr "____torch_script_interface__"
 
+DummyDeclarations = """
+class DummyNNModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor):
+        return x
+
+import enum
+class DummyEnum(enum.Enum):
+    TORCH = "torch"
+    SCRIPT = "script"
+
+@torch.jit.script
+class DummyClass():
+    def __init__(self, v: int) -> None:
+        self.v = v
+
+    def exported(self) -> int:
+        return self.v
+
+@torch.jit.interface
+class DummyInterface():
+    def __init__(self, v: int) -> None:
+        pass
+
+    def forward(self) -> int:
+        pass
+
+import collections
+DummyNamedTuple = collections.namedtuple("DummyNamedTuple", ["value"])
+"""
 
 class TSTypes:
 
@@ -40,8 +74,7 @@ class TSTypes:
 
     @staticmethod
     def TSModuleType(nest_depth):
-        # TODO: Use a dummy module for testing
-        return ["torch.nn.Module"]
+        return ["DummyNNModule"]
 
     @staticmethod
     def TSType(nest_depth):
@@ -61,12 +94,13 @@ class TSTypes:
     def TSBuiltinNominalType():
         res = []
         res.extend(TSTypes.TSTensor())
-        res.append("torch.collections.namedtuple")
+        res.append("DummyNamedTuple")
         res.append("torch.device")
-        res.append("torch.stream")
+        res.append("torch.Stream")
         res.append("torch.dtype")
-        res.append("torch.nn.ModuleList")
-        res.append("torch.nn.ModuleDict")
+        # TODO: ModuleDict and ModuleList can not be parsed by annotation
+        #res.append("torch.nn.ModuleList")
+        #res.append("torch.nn.ModuleDict")
         return res
 
     @staticmethod
@@ -83,23 +117,21 @@ class TSTypes:
 
     @staticmethod
     def TSEnum():
-        # TODO: Add a derived enum for testing
-        return ["enum.Enum"]
+        return ["DummyEnum"]
 
     @staticmethod
     def TSClass():
-        # TODO: Add a JIT class for testing
-        return []
+        return ["DummyClass"]
 
     @staticmethod
     def TSInterface():
-        # TODO: Add an interface for testing
-        return []
+        return ["DummyInterface"]
 
     @staticmethod
     def TSPrimitiveType():
         # TODO: How to express None type?
-        return ["int", "float", "double", "bool", "str"]
+        # TODO: double is not a valid annotation
+        return ["int", "float", "bool", "str"]
 
     @staticmethod
     def TSStructuralType(nest_depth):
@@ -169,9 +201,43 @@ class TSTypes:
         return res
 
     def TSKeyType():
-        res = ["str", "int", "floatl", "bool", "Any"]
+        res = ["str", "int", "float", "bool", "Any"]
         res.extend(TSTypes.TSTensor())
         return res
+
+def ConstructTestFileBoilerPlate():
+    source = """
+import torch
+from typing import Any, Tuple, List, Optional, Dict
+    """
+
+    source += DummyDeclarations 
+    return source
+
+def ConstructPassThroughCase(type_str: str):
+    source = """
+def fn(x: {type_str}) -> {type_str}:
+    return x
+
+try:
+    torch.jit.script(fn)
+    print("{type_str} case successfully compiled")
+except Exception as e:
+    print("{type_str} case failed to compile")
+    print("Error is: " + str(e))
+    """.format(type_str=type_str)
+
+    return source
+
+def main():
+    name = ""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        name = f.name
+        f.write(ConstructTestFileBoilerPlate())
+        for t in TSTypes.TSAllType(nest_depth=3):
+            f.write(ConstructPassThroughCase(t))
+    subprocess.call(["python3", f.name])
+
+if __name__ == "__main__":
+    main()
 	
-for t in TSTypes.TSAllType(nest_depth=2):
-    print(t)
